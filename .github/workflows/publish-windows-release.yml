@@ -68,9 +68,23 @@ jobs:
       - name: Audit exact source snapshot
         shell: pwsh
         run: |
-          & "$env:AURORA_SOURCE_ROOT\scripts\release-audit.ps1" `
-            -Version $env:AURORA_VERSION `
-            -SkipPackage
+          Push-Location $env:AURORA_SOURCE_ROOT
+          try {
+            & "$env:ProgramFiles\nodejs\node.exe" --check `
+              'apps/windows/gui/frontend/dist/app.js'
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & '.\scripts\test.ps1'
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & '.\scripts\check-bindings.ps1'
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & '.\scripts\check-mihomo-compatibility.ps1'
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          finally {
+            Pop-Location
+          }
 
       - name: Build public Windows packages
         shell: pwsh
