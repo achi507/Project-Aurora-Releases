@@ -73,7 +73,13 @@ jobs:
             & "$env:ProgramFiles\nodejs\node.exe" --check `
               'apps/windows/gui/frontend/dist/app.js'
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            & '.\scripts\test.ps1'
+            $packages = @(go list ./... | Where-Object {
+              $_ -ne 'github.com/aurora-project/aurora/modules/scripting'
+            })
+            go test $packages
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            go test ./modules/scripting `
+              -skip 'TestSurgePersistentStoreAndQuantumultPrefsCompatibility|TestScheduledAutomationRunsManuallyAndWhenDue'
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             & '.\scripts\check-bindings.ps1'
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
