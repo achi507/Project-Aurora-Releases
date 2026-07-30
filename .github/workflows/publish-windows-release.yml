@@ -1,0 +1,112 @@
+name: Publish Windows Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Aurora version without the leading v
+        required: true
+        default: 1.5.0
+
+permissions:
+  contents: write
+
+concurrency:
+  group: public-windows-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build and publish public Windows release
+    runs-on: windows-latest
+    steps:
+      - name: Check out release channel
+        uses: actions/checkout@v4
+
+      - name: Validate version
+        shell: pwsh
+        run: |
+          $version = '${{ inputs.version }}'
+          if ($version -notmatch '^\d+\.\d+\.\d+(?:-(?:beta|rc)(?:\.\d+)?)?$') {
+            throw "Invalid Aurora version: $version"
+          }
+          "AURORA_VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 1.25.x
+          cache: false
+
+      - name: Install Windows build tools
+        shell: pwsh
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+          choco install nsis --yes --no-progress
+
+      - name: Download exact source snapshot
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $seed = Join-Path $env:RUNNER_TEMP 'aurora-source-seed'
+          New-Item -ItemType Directory -Force -Path $seed | Out-Null
+          gh release download "v$env:AURORA_VERSION" `
+            --repo '${{ github.repository }}' `
+            --pattern "Aurora-$env:AURORA_VERSION-Source.zip" `
+            --dir $seed
+          Expand-Archive `
+            -LiteralPath (Join-Path $seed "Aurora-$env:AURORA_VERSION-Source.zip") `
+            -DestinationPath $seed
+          $sourceRoot = Join-Path $seed "Aurora-$env:AURORA_VERSION-Source"
+          if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot 'go.mod'))) {
+            throw 'Source snapshot does not contain go.mod'
+          }
+          "AURORA_SOURCE_SEED=$(Join-Path $seed "Aurora-$env:AURORA_VERSION-Source.zip")" >> $env:GITHUB_ENV
+          "AURORA_SOURCE_ROOT=$sourceRoot" >> $env:GITHUB_ENV
+
+      - name: Build verified Windows release
+        shell: pwsh
+        env:
+          AURORA_UPDATE_SIGNING_KEY: ${{ secrets.AURORA_UPDATE_SIGNING_KEY }}
+        run: |
+          & "$env:AURORA_SOURCE_ROOT\scripts\release-audit.ps1" `
+            -Version $env:AURORA_VERSION
+
+      - name: Create self-contained corresponding source
+        shell: pwsh
+        run: |
+          $packageStage = Join-Path $env:RUNNER_TEMP 'aurora-source-package'
+          New-Item -ItemType Directory -Force -Path $packageStage | Out-Null
+          Expand-Archive -LiteralPath $env:AURORA_SOURCE_SEED `
+            -DestinationPath $packageStage
+          $packageRoot = Join-Path $packageStage `
+            "Aurora-$env:AURORA_VERSION-Source"
+          go mod vendor -C $packageRoot
+          $mihomoLicense = Join-Path (go env GOPATH) `
+            'pkg\mod\github.com\metacubex\mihomo@v1.19.28\LICENSE'
+          Copy-Item -LiteralPath $mihomoLicense `
+            -Destination (Join-Path $packageRoot 'COPYING')
+          $sourceArchive = Join-Path $env:RUNNER_TEMP `
+            "Aurora-$env:AURORA_VERSION-Source.zip"
+          tar -a -cf $sourceArchive `
+            -C $packageStage `
+            (Split-Path $packageRoot -Leaf)
+          "AURORA_SOURCE_ARCHIVE=$sourceArchive" >> $env:GITHUB_ENV
+
+      - name: Publish release assets
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $releaseDirectory = Join-Path $env:AURORA_SOURCE_ROOT `
+            "build\windows\releases\$env:AURORA_VERSION"
+          gh release upload "v$env:AURORA_VERSION" `
+            (Join-Path $releaseDirectory "Aurora-$env:AURORA_VERSION-Setup-x64.exe") `
+            (Join-Path $releaseDirectory "Aurora-$env:AURORA_VERSION-Portable-x64.zip") `
+            (Join-Path $releaseDirectory "Aurora-$env:AURORA_VERSION-Private-Update-x64.zip") `
+            (Join-Path $releaseDirectory 'SHA256SUMS.txt') `
+            (Join-Path $releaseDirectory 'update-manifest.json') `
+            $env:AURORA_SOURCE_ARCHIVE `
+            --repo '${{ github.repository }}' `
+            --clobber
