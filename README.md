@@ -9,8 +9,7 @@ Use the Releases page to download:
 
 - the unsigned Windows x64 installer;
 - the portable Windows x64 archive;
-- the signed offline update bundle;
-- SHA-256 checksums and the signed update manifest;
+- SHA-256 checksums;
 - the exact corresponding source snapshot for each distributed build.
 
 Windows SmartScreen may warn about the installer because the current builds are
@@ -25,3 +24,6 @@ source snapshot.
 
 This repository is a distribution channel only. It does not contain Aurora's
 development history.
+
+Signed offline update bundles remain restricted to Aurora's private release
+channel so the update-signing key is never exposed to a public build workflow.

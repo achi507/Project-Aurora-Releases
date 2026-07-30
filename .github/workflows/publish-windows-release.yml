@@ -65,13 +65,40 @@ jobs:
           "AURORA_SOURCE_SEED=$(Join-Path $seed "Aurora-$env:AURORA_VERSION-Source.zip")" >> $env:GITHUB_ENV
           "AURORA_SOURCE_ROOT=$sourceRoot" >> $env:GITHUB_ENV
 
-      - name: Build verified Windows release
+      - name: Audit exact source snapshot
         shell: pwsh
-        env:
-          AURORA_UPDATE_SIGNING_KEY: ${{ secrets.AURORA_UPDATE_SIGNING_KEY }}
         run: |
           & "$env:AURORA_SOURCE_ROOT\scripts\release-audit.ps1" `
+            -Version $env:AURORA_VERSION `
+            -SkipPackage
+
+      - name: Build public Windows packages
+        shell: pwsh
+        run: |
+          & "$env:AURORA_SOURCE_ROOT\scripts\build-windows-installer.ps1" `
             -Version $env:AURORA_VERSION
+          $releaseDirectory = Join-Path $env:AURORA_SOURCE_ROOT `
+            "build\windows\public\$env:AURORA_VERSION"
+          $portableStage = Join-Path $env:RUNNER_TEMP 'aurora-portable'
+          New-Item -ItemType Directory -Force -Path $releaseDirectory | Out-Null
+          New-Item -ItemType Directory -Force -Path $portableStage | Out-Null
+          Copy-Item `
+            -LiteralPath (Join-Path $env:AURORA_SOURCE_ROOT 'build\windows\Aurora-Setup-x64.exe') `
+            -Destination (Join-Path $releaseDirectory "Aurora-$env:AURORA_VERSION-Setup-x64.exe")
+          Copy-Item `
+            -LiteralPath (Join-Path $env:AURORA_SOURCE_ROOT 'build\windows\Aurora.exe') `
+            -Destination (Join-Path $portableStage 'Aurora.exe')
+          Copy-Item `
+            -LiteralPath (Join-Path $env:AURORA_SOURCE_ROOT 'README.md') `
+            -Destination (Join-Path $portableStage 'README.md')
+          Compress-Archive `
+            -LiteralPath @(
+              (Join-Path $portableStage 'Aurora.exe'),
+              (Join-Path $portableStage 'README.md')
+            ) `
+            -DestinationPath (Join-Path $releaseDirectory "Aurora-$env:AURORA_VERSION-Portable-x64.zip") `
+            -CompressionLevel Optimal
+          "AURORA_RELEASE_DIRECTORY=$releaseDirectory" >> $env:GITHUB_ENV
 
       - name: Create self-contained corresponding source
         shell: pwsh
@@ -94,19 +121,32 @@ jobs:
             (Split-Path $packageRoot -Leaf)
           "AURORA_SOURCE_ARCHIVE=$sourceArchive" >> $env:GITHUB_ENV
 
+      - name: Create SHA-256 checksums
+        shell: pwsh
+        run: |
+          $files = @(
+            (Join-Path $env:AURORA_RELEASE_DIRECTORY "Aurora-$env:AURORA_VERSION-Setup-x64.exe"),
+            (Join-Path $env:AURORA_RELEASE_DIRECTORY "Aurora-$env:AURORA_VERSION-Portable-x64.zip"),
+            $env:AURORA_SOURCE_ARCHIVE
+          )
+          $lines = $files | ForEach-Object {
+            $file = Get-Item -LiteralPath $_
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_).Hash.ToLowerInvariant()
+            "$hash  $($file.Name)"
+          }
+          $lines | Set-Content `
+            -LiteralPath (Join-Path $env:AURORA_RELEASE_DIRECTORY 'SHA256SUMS.txt') `
+            -Encoding ascii
+
       - name: Publish release assets
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $releaseDirectory = Join-Path $env:AURORA_SOURCE_ROOT `
-            "build\windows\releases\$env:AURORA_VERSION"
           gh release upload "v$env:AURORA_VERSION" `
-            (Join-Path $releaseDirectory "Aurora-$env:AURORA_VERSION-Setup-x64.exe") `
-            (Join-Path $releaseDirectory "Aurora-$env:AURORA_VERSION-Portable-x64.zip") `
-            (Join-Path $releaseDirectory "Aurora-$env:AURORA_VERSION-Private-Update-x64.zip") `
-            (Join-Path $releaseDirectory 'SHA256SUMS.txt') `
-            (Join-Path $releaseDirectory 'update-manifest.json') `
+            (Join-Path $env:AURORA_RELEASE_DIRECTORY "Aurora-$env:AURORA_VERSION-Setup-x64.exe") `
+            (Join-Path $env:AURORA_RELEASE_DIRECTORY "Aurora-$env:AURORA_VERSION-Portable-x64.zip") `
+            (Join-Path $env:AURORA_RELEASE_DIRECTORY 'SHA256SUMS.txt') `
             $env:AURORA_SOURCE_ARCHIVE `
             --repo '${{ github.repository }}' `
             --clobber
